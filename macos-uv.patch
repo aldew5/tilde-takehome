@@ -1,0 +1,56 @@
+--- uv.lock
++++ uv.lock
+@@
+-requires-python = "==3.11.*"
++requires-python = ">=3.11,<4.0"
+@@ [[package]]
+ name = "torch"
+ version = "2.5.1"
+ source = { registry = "https://pypi.org/simple" }
+-dependencies = [
+-    { name = "filelock" },
+-    { name = "fsspec" },
+-    { name = "jinja2" },
+-    { name = "networkx" },
+-    { name = "nvidia-cublas-cu12",   marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+-    { name = "nvidia-cuda-cupti-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+-    { name = "nvidia-cuda-nvrtc-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+-    { name = "nvidia-cuda-runtime-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+-    { name = "nvidia-cudnn-cu12",      marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+-    { name = "nvidia-cufft-cu12",      marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+-    { name = "nvidia-curand-cu12",     marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+-    { name = "nvidia-cusolver-cu12",   marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+-    { name = "nvidia-cusparse-cu12",   marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+-    { name = "nvidia-nccl-cu12",       marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+-    { name = "nvidia-nvjitlink-cu12",  marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+-    { name = "nvidia-nvtx-cu12",       marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+-    { name = "triton",                 marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+-    { name = "sympy" },
+-    { name = "typing-extensions" },
+-]
++dependencies = [
++    { name = "filelock" },
++    { name = "fsspec" },
++    { name = "jinja2" },
++    { name = "networkx" },
++    { name = "sympy" },
++    { name = "typing-extensions" },
++]
+@@ [[package]]
+ name = "mlr-takehome"
+ version = "0.1.0"
+ source = { path = ".", format = "legacy" }
+-dependencies = [
++dependencies = [
+     { name = "accelerate" },
+     { name = "aiohappyeyeballs" },
+@@
+-    { name = "flash-attn" },
++    { name = "flash-attn", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+     { name = "filelock" },
+-    { name = "flash-attn" },
++    { name = "flash-attn", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+     { name = "fire" },
+     { name = "fonttools" },
+ ]
+
