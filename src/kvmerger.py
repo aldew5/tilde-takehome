@@ -4,7 +4,7 @@ import torch
 
 
 
-class AverageCache(Cache):
+class KVMerger(Cache):
     """
     An implementation of KNorm filtering in transformers' KV cache framework.
 
@@ -43,7 +43,8 @@ class AverageCache(Cache):
     def _partition(self,
         layer_idx: int) -> List[List[List[int]]]:
         """
-        Returns a greedy partition of the cache object as a list of indices, as in KVMerger (Wang et al., 2024).
+        Returns a greedy partition of the cache object *ignoring window tokens*
+        as a list of indices, as in KVMerger (Wang et al., 2024).
         Retains the KV states whose corresponding aggregated attention scores fall within
         the top-k range, and the current window.
         """
@@ -82,10 +83,7 @@ class AverageCache(Cache):
         # [bsz, heads, rem_len, rem_len]
         cos_sim = torch.matmul(rem_keys_norm, rem_keys_norm.transpose(-2, -1))  
         
-        # To get similarity between key i and key j:
-        # cos_sim[..., i, j] gives similarity between key i and key j
-        # For example, cos_sim[0, 0, 5, 10] gives similarity between key 5 and key 10
-        # in the first batch and first head
+        # NOTE: cos_sim[..., i, j]  = sim(k_i, k_j)
         bsz, num_heads, rem_len, head_dim = rem_keys.shape
         partition_idx = [[[] for _ in range(num_heads)] for _ in range(bsz)]
         split_point = key_length - self.window_length
@@ -123,8 +121,9 @@ class AverageCache(Cache):
                     i -= 1
 
                 # add the window for batch b and head h to partition_idx (absolute pos)
-                window_indices = list(range(split_point, key_length))
-                partition_idx[b][h].append(window_indices)
+                # NOTE: we will add window in update
+                #window_indices = list(range(split_point, key_length))
+                #partition_idx[b][h].append(window_indices)
 
         
         # append top k indxs
@@ -144,64 +143,74 @@ class AverageCache(Cache):
         cache_kwargs: Optional[Dict[str, Any]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Merges the clusters and updates KV cache
+        Merges the clusters and updates KV cache. partition function incorrect, padding to fix.
         """
     
         if len(self.key_cache) <= layer_idx:
-            # need to init layer in cache
             self.key_cache.append(key_states.clone())
             self.value_cache.append(value_states.clone())
         else:
-            # old cache with new key-value
-            self.key_cache[layer_idx] = torch.cat((self.key_cache[layer_idx], key_states), dim=2)
-            self.value_cache[layer_idx] = torch.cat((self.value_cache[layer_idx], value_states), dim=2)
+            self.key_cache[layer_idx] = torch.cat(
+                (self.key_cache[layer_idx], key_states), dim=2
+            )
+            self.value_cache[layer_idx] = torch.cat(
+                (self.value_cache[layer_idx], value_states), dim=2
+            )
 
-        clusters = self._partition(layer_idx)  # List[B][H] of List[List[int]]
+        # assume correct partition, no padding necessary
+        clusters = self._partition(layer_idx)  
 
-        # 3) Retrieve the full, current cache tensors
-        orig_keys   = self.key_cache[layer_idx]   # [B, H, L, D]
-        orig_values = self.value_cache[layer_idx] # [B, H, L, D]
-        B, H, L, D  = orig_keys.shape
+        # [B, H, L, D]
+        K_full = self.key_cache[layer_idx]   
+        V_full = self.value_cache[layer_idx] 
+        B, H, L, D = K_full.shape
 
-        new_keys = []
-        new_values = []
+        W = self.window_length
+        split = L - W
+        K_win = K_full[..., split:, :]  
+        V_win = V_full[..., split:, :]
+
+        old_budget = self.max_length - W
+        merged_K, merged_V = [], [] 
         for b in range(B):
-            # determine padding length = max clusters across heads for this batch item
-            max_clusters = max(len(clusters[b][h]) for h in range(H))
-
-            bh_keys = []
-            bh_vals = []
+            bh_K, bh_V = [], []
             for h in range(H):
-                reps_k = []
-                reps_v = []
-                for cluster_idxs in clusters[b][h]:
-                    idx = torch.tensor(cluster_idxs, device=orig_keys.device, dtype=torch.long)
-                    # gather and average
-                    k_rep = orig_keys[b, h, idx, :].mean(dim=0)   # [D]
-                    v_rep = orig_values[b, h, idx, :].mean(dim=0) # [D]
-                    reps_k.append(k_rep)
-                    reps_v.append(v_rep)
+                reps_k, reps_v = [], []
+                for idxs in clusters[b][h]:
+                    idx = torch.tensor(idxs, device=K_full.device, dtype=torch.long)
+                    Kc = K_full[b, h, idx, :]  
+                    Vc = V_full[b, h, idx, :]   
+                    n  = Kc.size(0)
 
-                # pad each head’s reps up to max_clusters (repeat last)
-                if len(reps_k) < max_clusters:
-                    last_k = reps_k[-1]
-                    last_v = reps_v[-1]
-                    reps_k += [last_k] * (max_clusters - len(reps_k))
-                    reps_v += [last_v] * (max_clusters - len(reps_v))
+                    Kn = F.normalize(Kc, dim=-1)       
+                    simm = Kn @ Kn.transpose(0,1)         
+                    agg = simm.sum(dim=1)                 
+                    p = int(agg.argmax().item())      
 
-                # stack to [max_clusters, D]
-                bh_keys.append(torch.stack(reps_k, dim=0))
-                bh_vals.append(torch.stack(reps_v, dim=0))
+                    diffs = Kc - Kc[p:p+1]                
+                    d2 = (diffs * diffs).sum(dim=1)    
 
-            # now stack heads → [H, max_clusters, D]
-            new_keys.append(torch.stack(bh_keys, dim=0))
-            new_values.append(torch.stack(bh_vals, dim=0))
+                    g0 = torch.exp(-0.5 * d2)        
+                    sigma = g0.sum() / (math.sqrt(2) * n + 1e-6)
+                    g = torch.exp(-d2.div(2 * sigma*sigma + 1e-6)) 
+                    w = g / (g.sum() + 1e-6)                       
 
-        # 4) Final stack over batch → [B, H, max_clusters, D]
-        merged_keys   = torch.stack(new_keys,   dim=0)
-        merged_values = torch.stack(new_values, dim=0)
+                    kM = (w.unsqueeze(1) * Kc).sum(dim=0) 
+                    vM = (w.unsqueeze(1) * Vc).sum(dim=0) 
+                    reps_k.append(kM)
+                    reps_v.append(vM)
 
-        # 5) Overwrite cache and return
-        self.key_cache[layer_idx]   = merged_keys
-        self.value_cache[layer_idx] = merged_values
-        return merged_keys, merged_values
+                # stack all cluster reps for this head
+                # NOTE: length should equal old_budget so no padding
+                bh_K.append(torch.stack(reps_k, dim=0))  
+                bh_V.append(torch.stack(reps_v, dim=0))
+
+            merged_K.append(torch.stack(bh_K, dim=0))  
+            merged_V.append(torch.stack(bh_V, dim=0))
+
+        K_old = torch.stack(merged_K, dim=0) 
+        V_old = torch.stack(merged_V, dim=0)
+        self.key_cache[layer_idx] = torch.cat((K_old, K_win), dim=2)
+        self.value_cache[layer_idx] = torch.cat((V_old, V_win), dim=2)
+
+        return self.key_cache[layer_idx], self.value_cache[layer_idx]

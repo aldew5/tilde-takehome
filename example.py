@@ -1,12 +1,12 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, TextStreamer
 from src.hf_cache import KNormCache
-from src.logits_cache import AverageCache
+from src.kvmerger import KVMerger
 from accelerate import disk_offload
 from datasets import load_dataset
-import bitsandbytes
+import bitsandbytes # NOTE: weird grad error due to no GPU
 
-model_name = "Qwen/Qwen3-0.6B"
+model_name = "meta-llama/Llama-2-3b-chat-hf"
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
     device_map="auto",
@@ -30,7 +30,7 @@ past_key_values = KNormCache(
     max_length=8,
 )
 
-#past_key_values = AverageCache(
+#past_key_values = KVMerger(
 #    window_length=64,
 #    max_length=128,
 #    eps=0.9
