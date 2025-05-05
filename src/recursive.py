@@ -5,6 +5,9 @@ import torch
 
 """
 UNTESTED implementation of Recursive KVMerger2.  
+
+UPDATE: I switched to an easier cluster assignment (see "Improved cluster assignment") so the recursion is no longer strictly 
+necessary (we can just choose the highest sim adj cluster). So this file is a bit of a hybrid right now.
 """
 
 
